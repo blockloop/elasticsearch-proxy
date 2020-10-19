@@ -5,14 +5,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/http/pprof"
 	"net/url"
 	"strings"
 	"time"
-
-	"golang.org/x/net/http2"
 
 	configOptions "github.com/openshift/elasticsearch-proxy/pkg/config"
 	handlers "github.com/openshift/elasticsearch-proxy/pkg/handlers"
@@ -24,11 +24,11 @@ import (
 type ProxyServer struct {
 	serveMux http.Handler
 
-	//handlers
+	// handlers
 	requestHandlers []handlers.RequestHandler
 }
 
-//RegisterRequestHandlers adds request handlers to the
+// RegisterRequestHandlers adds request handlers to the
 func (p *ProxyServer) RegisterRequestHandlers(reqHandlers []handlers.RequestHandler) {
 	p.requestHandlers = append(p.requestHandlers, reqHandlers...)
 }
@@ -46,19 +46,25 @@ func (u *UpstreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else {
 		u.handler.ServeHTTP(w, r)
 	}
-
 }
 
 func NewReverseProxy(target *url.URL, upstreamFlush time.Duration, rootCAs []string) (*httputil.ReverseProxy, error) {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.FlushInterval = upstreamFlush
 
+	dialer := &net.Dialer{
+		Timeout: 5 * time.Second,
+	}
+
 	transport := &http.Transport{
-		MaxIdleConns:          1000,
-		MaxIdleConnsPerHost:   500,
+		MaxIdleConns:          100,
+		MaxIdleConnsPerHost:   10,
 		IdleConnTimeout:       1 * time.Minute,
-		TLSHandshakeTimeout:   10 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
+		DisableKeepAlives:     true,
+		DialContext:           dialer.DialContext,
+		Dial:                  dialer.Dial,
 	}
 	if len(rootCAs) > 0 {
 		pool, err := util.GetCertPool(rootCAs, false)
@@ -68,12 +74,6 @@ func NewReverseProxy(target *url.URL, upstreamFlush time.Duration, rootCAs []str
 		transport.TLSClientConfig = &tls.Config{
 			RootCAs: pool,
 		}
-	}
-	if err := http2.ConfigureTransport(transport); err != nil {
-		if len(rootCAs) > 0 {
-			return nil, err
-		}
-		log.Warnf("Failed to configure http2 transport: %v", err)
 	}
 	proxy.Transport = transport
 
@@ -150,6 +150,20 @@ func (p *ProxyServer) ServeHTTP(rw http.ResponseWriter, req *http.Request) {
 	log.Debugf("Serving request: %s", req.URL.Path)
 	log.Tracef("Content-Length: %v", req.ContentLength)
 	log.Tracef("Headers: %v", req.Header)
+
+	if req.URL.Path == "/test" {
+		b, err := ioutil.ReadAll(req.Body)
+		if err != nil {
+			rw.WriteHeader(400)
+			_, _ = fmt.Fprintf(rw, `{"error", %q}`, err)
+			return
+		}
+
+		rw.WriteHeader(200)
+		_, _ = fmt.Fprintf(rw, `{"len": "%d"}`, len(b))
+		return
+	}
+
 	var err error
 	alteredReq := req
 	responseWriter := NewResponseWriter(rw)

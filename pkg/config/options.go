@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/tls"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -12,7 +13,7 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-//Options are that can be set by Command Line Flag, or Config File
+// Options are that can be set by Command Line Flag, or Config File
 type Options struct {
 	ProxyWebSockets  bool     `flag:"proxy-websockets"`
 	ListeningAddress string   `flag:"listening-address"`
@@ -33,28 +34,28 @@ type Options struct {
 	SSLInsecureSkipVerify bool `flag:"ssl-insecure-skip-verify"`
 	RequestLogging        bool `flag:"request-logging"`
 
-	//Auth Handler Configs
+	// Auth Handler Configs
 
-	//RawAuthBackEndRole is a map of rolename to SubjectAccessReviews to check to apply a given role to a user
-	//these are parsed and added to AuthBackEndRoles
+	// RawAuthBackEndRole is a map of rolename to SubjectAccessReviews to check to apply a given role to a user
+	// these are parsed and added to AuthBackEndRoles
 	RawAuthBackEndRole []string `flag:"auth-backend-role"`
 
-	//AuthBackEndRoles is a map of rolename to SubjectAccessReviews to check to apply a given role to a user
+	// AuthBackEndRoles is a map of rolename to SubjectAccessReviews to check to apply a given role to a user
 	AuthBackEndRoles map[string]BackendRoleConfig
 	CacheExpiry      time.Duration `flag:"cache-expiry"`
-	//AuthWhiteListedNames  is the list of names compared against cert CN for which a request will be passed through
-	//with no additional processing
+	// AuthWhiteListedNames  is the list of names compared against cert CN for which a request will be passed through
+	// with no additional processing
 	AuthWhiteListedNames []string `flag:"auth-whitelisted-name"`
 
-	//AuthAdminRole is the name of the only role that will be
-	//passed on the request if it is found in the list of roles
+	// AuthAdminRole is the name of the only role that will be
+	// passed on the request if it is found in the list of roles
 	AuthAdminRole string `flag:"auth-admin-role"`
 
-	//AuthDefaultRole is the role every request is assigned
+	// AuthDefaultRole is the role every request is assigned
 	AuthDefaultRole string `flag:"auth-default-role"`
 }
 
-//Init the configuration options based on the values passed via the CLI
+// Init the configuration options based on the values passed via the CLI
 func Init(args []string) (*Options, error) {
 	opts := newOptions()
 	flagSet := newFlagSet()
@@ -65,7 +66,11 @@ func Init(args []string) (*Options, error) {
 
 	if opts.SSLInsecureSkipVerify {
 		insecureTransport := &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			TLSClientConfig:     &tls.Config{InsecureSkipVerify: true},
+			TLSHandshakeTimeout: 5 * time.Second,
+			Dial: (&net.Dialer{
+				Timeout: 5 * time.Second,
+			}).Dial,
 		}
 		http.DefaultClient = &http.Client{Transport: insecureTransport}
 	}
@@ -88,7 +93,7 @@ func newOptions() *Options {
 	}
 }
 
-//Validate the configuration options and return errors
+// Validate the configuration options and return errors
 func (o *Options) Validate() error {
 	log.Tracef("Validating options: %v", o)
 	msgs := make([]string, 0)
@@ -117,7 +122,7 @@ func (o *Options) Validate() error {
 		msgs = append(msgs, "metrics-listening-address requires metrics-tls-cert and metrics-tls-key to be set")
 	}
 
-	//Auth Handler validations
+	// Auth Handler validations
 	if len(o.RawAuthBackEndRole) > 0 {
 		for _, raw := range o.RawAuthBackEndRole {
 			parts := strings.Split(raw, "=")
@@ -138,7 +143,6 @@ func (o *Options) Validate() error {
 			}
 			o.AuthBackEndRoles[name] = *roleConfig
 		}
-
 	}
 
 	if len(msgs) != 0 {
